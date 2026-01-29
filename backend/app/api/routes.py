@@ -90,13 +90,11 @@ async def get_moderation_queue(
     
     query = db.query(Message)
     
-    # Filter by status (or 'all' to get everything)
+    # Filter by review status
     if status == "pending":
-        query = query.filter(Message.is_approved.is_(None))
-    elif status == "approved":
-        query = query.filter(Message.is_approved == True)
-    elif status == "rejected":
-        query = query.filter(Message.is_approved == False)
+        query = query.filter(Message.is_reviewed == False)
+    elif status == "reviewed":
+        query = query.filter(Message.is_reviewed == True)
     # 'all' or any other value returns everything
     
     # Order by message_timestamp descending (newest first)

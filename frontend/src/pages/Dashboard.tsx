@@ -24,6 +24,8 @@ import {
   Select,
   MenuItem,
   SelectChangeEvent,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import {
   Visibility as ViewIcon,
@@ -41,13 +43,14 @@ const Dashboard: React.FC = () => {
   const [totalCount, setTotalCount] = useState(0);
   const [scoreRange, setScoreRange] = useState<number[]>([0, 100]);
   const [sortBy, setSortBy] = useState<string>('time');
+  const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
   const fetchMessages = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getQueue(page, 'all');
+      const data = await getQueue(page, activeTab);
       
       // Filter by score range
       let filtered = data.pending_messages.filter(
@@ -70,7 +73,7 @@ const Dashboard: React.FC = () => {
       console.error('Failed to fetch messages:', error);
     }
     setLoading(false);
-  }, [page, scoreRange, sortBy]);
+  }, [page, scoreRange, sortBy, activeTab]);
 
   useEffect(() => {
     fetchMessages();
@@ -82,6 +85,11 @@ const Dashboard: React.FC = () => {
 
   const handleSortChange = (event: SelectChangeEvent) => {
     setSortBy(event.target.value);
+  };
+
+  const handleTabChange = (_: React.SyntheticEvent, newValue: 'pending' | 'reviewed') => {
+    setActiveTab(newValue);
+    setPage(1);
   };
 
   const getScoreColor = (score: number): 'success' | 'warning' | 'error' => {
@@ -111,6 +119,14 @@ const Dashboard: React.FC = () => {
       </AppBar>
 
       <Container maxWidth="xl" sx={{ mt: 3 }}>
+        {/* Tabs */}
+        <Paper sx={{ mb: 2 }}>
+          <Tabs value={activeTab} onChange={handleTabChange}>
+            <Tab label="Pending Review" value="pending" />
+            <Tab label="Reviewed" value="reviewed" />
+          </Tabs>
+        </Paper>
+
         {/* Filter Controls */}
         <Paper sx={{ p: 2, mb: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
           <Box sx={{ width: 300 }}>
