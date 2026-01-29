@@ -3,8 +3,7 @@
   publish = "build"
 
 [build.environment]
-  # Set this to your deployed backend URL in Netlify UI
-  # REACT_APP_API_URL = "https://your-backend.railway.app"
+  REACT_APP_API_URL = "https://message-moderation-production.up.railway.app"
 
 [[redirects]]
   from = "/*"
