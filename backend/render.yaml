@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: message-moderation-api
+    env: python
+    buildCommand: pip install -r requirements.txt && python init_db.py
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SNOWFLAKE_USER
+        sync: false
+      - key: SNOWFLAKE_PASSWORD
+        sync: false
+      - key: SNOWFLAKE_ACCOUNT
+        sync: false
+      - key: SNOWFLAKE_WAREHOUSE
+        sync: false
+      - key: SNOWFLAKE_ROLE
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:///./moderation.db

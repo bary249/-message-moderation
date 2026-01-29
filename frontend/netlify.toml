@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = "build"
+
+[build.environment]
+  # Set this to your deployed backend URL in Netlify UI
+  # REACT_APP_API_URL = "https://your-backend.railway.app"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
