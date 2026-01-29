@@ -6,7 +6,12 @@ from app.models.schemas import MessageModerationResult
 
 class ClaudeModerator:
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        api_key = settings.anthropic_api_key
+        if api_key:
+            self.client = anthropic.Anthropic(api_key=api_key)
+        else:
+            self.client = None
+            print("[ClaudeModerator] Warning: ANTHROPIC_API_KEY not set, moderation will use dummy scores")
     
     def remove_pii(self, message: str) -> str:
         """Remove personally identifiable information from message"""
@@ -28,6 +33,18 @@ class ClaudeModerator:
         """Analyze message for content moderation"""
         # Remove PII first
         processed_message = self.remove_pii(original_message)
+        
+        # If no API key, return dummy scores
+        if not self.client:
+            return MessageModerationResult(
+                moderation_score=0.5,
+                adversity_score=0.0,
+                violence_score=0.0,
+                inappropriate_content_score=0.0,
+                spam_score=0.0,
+                processed_message=processed_message,
+                reasoning="No ANTHROPIC_API_KEY configured"
+            )
         
         # Claude prompt for moderation
         prompt = f"""
