@@ -121,6 +121,8 @@ class ClaudeModerator:
             )
             
         except Exception as e:
+            # Log the error for debugging
+            print(f"[ClaudeModerator] API Error: {type(e).__name__}: {str(e)}")
             # Fallback in case of API failure
             return MessageModerationResult(
                 moderation_score=0.5,  # Medium risk on failure
