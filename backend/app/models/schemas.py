@@ -67,9 +67,9 @@ class TokenData(BaseModel):
 
 # Review schemas
 class ReviewCreate(BaseModel):
-    action: str  # "approve", "reject", "escalate"
+    action: str  # "reviewed"
     reasoning: Optional[str] = None
-    confidence_score: float = Field(ge=0.0, le=1.0)
+    confidence_score: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
 
 class ReviewResponse(BaseModel):
     id: int
