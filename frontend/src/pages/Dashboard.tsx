@@ -60,7 +60,17 @@ const Dashboard: React.FC = () => {
       // Sort
       if (sortBy === 'score') {
         filtered = filtered.sort((a, b) => b.moderation_score - a.moderation_score);
+      } else if (sortBy === 'group') {
+        filtered = filtered.sort((a, b) => 
+          (a.group_name || a.group_id || '').localeCompare(b.group_name || b.group_id || '')
+        );
+      } else if (sortBy === 'time_asc') {
+        filtered = filtered.sort((a, b) => 
+          new Date(a.message_timestamp || a.created_at).getTime() - 
+          new Date(b.message_timestamp || b.created_at).getTime()
+        );
       } else {
+        // Default: time descending (newest first)
         filtered = filtered.sort((a, b) => 
           new Date(b.message_timestamp || b.created_at).getTime() - 
           new Date(a.message_timestamp || a.created_at).getTime()
@@ -139,10 +149,12 @@ const Dashboard: React.FC = () => {
               max={100}
             />
           </Box>
-          <FormControl size="small" sx={{ minWidth: 150 }}>
+          <FormControl size="small" sx={{ minWidth: 180 }}>
             <InputLabel>Sort By</InputLabel>
             <Select value={sortBy} label="Sort By" onChange={handleSortChange}>
-              <MenuItem value="time">Latest First</MenuItem>
+              <MenuItem value="time">Newest First</MenuItem>
+              <MenuItem value="time_asc">Oldest First</MenuItem>
+              <MenuItem value="group">Group Name</MenuItem>
               <MenuItem value="score">Highest Score</MenuItem>
             </Select>
           </FormControl>
