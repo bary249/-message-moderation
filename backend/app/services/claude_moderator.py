@@ -8,7 +8,7 @@ class ClaudeModerator:
     def __init__(self):
         api_key = settings.anthropic_api_key
         if api_key:
-            self.client = anthropic.Anthropic(api_key=api_key)
+            self.client = anthropic.AsyncAnthropic(api_key=api_key)
         else:
             self.client = None
             print("[ClaudeModerator] Warning: ANTHROPIC_API_KEY not set, moderation will use dummy scores")
@@ -72,7 +72,7 @@ class ClaudeModerator:
         """
         
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}]

@@ -86,4 +86,26 @@ export const reviewMessage = async (
   });
 };
 
+export interface IngestResponse {
+  ingested_count: number;
+  total_fetched: number;
+  results: Array<{
+    message_id: number;
+    status: string;
+    moderation_score: number;
+    group_name: string;
+    text_preview: string;
+  }>;
+}
+
+export const ingestMessages = async (
+  limit: number = 50,
+  days_back: number = 1
+): Promise<IngestResponse> => {
+  const response = await api.post('/snowflake/ingest', null, {
+    params: { limit, days_back }
+  });
+  return response.data;
+};
+
 export default api;

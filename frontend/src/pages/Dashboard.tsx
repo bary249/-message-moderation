@@ -116,6 +116,15 @@ const Dashboard: React.FC = () => {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             Message Moderation Dashboard
           </Typography>
+          <Button 
+            color="inherit" 
+            onClick={handlePullMessages} 
+            startIcon={<CloudDownloadIcon />} 
+            sx={{ mr: 2 }}
+            disabled={ingesting}
+          >
+            {ingesting ? 'Pulling...' : 'Pull Messages'}
+          </Button>
           <Button color="inherit" onClick={fetchMessages} startIcon={<RefreshIcon />} sx={{ mr: 2 }}>
             Refresh
           </Button>

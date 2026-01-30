@@ -4,6 +4,7 @@ Only SELECT queries allowed.
 """
 import os
 import re
+import asyncio
 import pandas as pd
 import snowflake.connector
 from dotenv import load_dotenv
@@ -112,7 +113,7 @@ class SnowflakeService:
         LIMIT {limit}
         """
         
-        df = query_db(query)
+        df = await asyncio.to_thread(query_db, query)
         
         messages = []
         for _, row in df.iterrows():
@@ -157,7 +158,7 @@ class SnowflakeService:
         LIMIT {limit}
         """
         
-        df = query_db(query)
+        df = await asyncio.to_thread(query_db, query)
         
         groups = []
         for _, row in df.iterrows():
@@ -194,7 +195,7 @@ class SnowflakeService:
         WHERE CREATED_AT >= '{cutoff_date}' {where_sql}
         """
         
-        df = query_db(query)
+        df = await asyncio.to_thread(query_db, query)
         
         if len(df) > 0:
             row = df.iloc[0]
