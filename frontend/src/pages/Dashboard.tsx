@@ -87,7 +87,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     fetchMessages();
-  }, [fetchMessages]);
+  }, [page, scoreRange, sortBy, activeTab]);
 
   const handleScoreChange = (_: Event, newValue: number | number[]) => {
     setScoreRange(newValue as number[]);

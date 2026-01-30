@@ -12,6 +12,9 @@ from app.models.database import Message
 # Background task for auto-polling Snowflake
 async def poll_snowflake_messages():
     """Background task: Poll Snowflake for new messages every 60 seconds."""
+    # Wait for app to fully start before first sync
+    await asyncio.sleep(5)
+    
     claude_moderator = ClaudeModerator()
     
     while True:
