@@ -37,9 +37,10 @@ export interface Message {
   original_message: string;
   processed_message: string;
   building_id: string;
-  building_name: string | null;
+  building_name?: string;
+  client_name?: string;
   group_id: string;
-  group_name: string | null;
+  group_name?: string | null;
   sender_id: string;
   message_timestamp: string | null;
   timestamp: string;
@@ -65,7 +66,7 @@ export const getQueue = async (
   status: string = 'pending'
 ): Promise<ModerationQueueResponse> => {
   const response = await api.get('/moderation/queue', {
-    params: { page, status, per_page: 20 }
+    params: { page, status, per_page: 50 }
   });
   return response.data;
 };
@@ -99,11 +100,40 @@ export interface IngestResponse {
 }
 
 export const ingestMessages = async (
-  limit: number = 50,
+  limit: number = 20,
   days_back: number = 1
 ): Promise<IngestResponse> => {
   const response = await api.post('/snowflake/ingest', null, {
     params: { limit, days_back }
+  });
+  return response.data;
+};
+
+export interface FetchByDateResponse {
+  status: string;
+  fetched_from_snowflake: number;
+  new_messages_saved: number;
+  target_date: string;
+}
+
+export const fetchMessagesByDate = async (targetDate: string): Promise<FetchByDateResponse> => {
+  const response = await api.post('/snowflake/fetch-by-date', null, {
+    params: { target_date: targetDate }
+  });
+  return response.data;
+};
+
+export interface ScoreBatchResponse {
+  status: string;
+  scored: number;
+  remaining: number;
+  elapsed_seconds?: number;
+  message?: string;
+}
+
+export const scoreBatch = async (limit: number = 20): Promise<ScoreBatchResponse> => {
+  const response = await api.post('/moderation/score-batch', null, {
+    params: { limit }
   });
   return response.data;
 };

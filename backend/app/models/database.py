@@ -26,6 +26,7 @@ class Message(Base):
     processed_message = Column(Text)  # PII-free version
     building_id = Column(String, index=True)  # community_id from Snowflake
     building_name = Column(String, nullable=True)  # Looked up from building DB
+    client_name = Column(String, nullable=True)  # Organization/client name from Snowflake
     group_id = Column(String, index=True)
     group_name = Column(String, nullable=True)  # From Snowflake DIM_INTREST_GROUP
     sender_id = Column(String, index=True)  # Non-PII identifier

@@ -46,36 +46,25 @@ class ClaudeModerator:
                 reasoning="No ANTHROPIC_API_KEY configured"
             )
         
-        # Claude prompt for moderation
-        prompt = f"""
-        Analyze the following message for content moderation. Score each category from 0.0 (clean) to 1.0 (severe violation).
+        # Optimized prompt for faster moderation
+        prompt = f"""Score this message for moderation (0.0=clean, 1.0=severe):
+"{processed_message}"
 
-        Message: "{processed_message}"
-
-        Provide scores for:
-        1. adversity_score: Hostility, aggression, personal attacks
-        2. violence_score: Threats, incitement to violence, graphic descriptions
-        3. inappropriate_content_score: Adult content, hate speech, discrimination
-        4. spam_score: Commercial spam, repetitive content, low-quality posts
-
-        Also provide an overall moderation_score (highest of individual scores) and brief reasoning.
-
-        Respond in JSON format:
-        {{
-            "adversity_score": 0.0,
-            "violence_score": 0.0,
-            "inappropriate_content_score": 0.0,
-            "spam_score": 0.0,
-            "moderation_score": 0.0,
-            "reasoning": "Brief explanation of scores"
-        }}
-        """
+Return JSON only:
+{{"adversity_score":0.0,"violence_score":0.0,"inappropriate_content_score":0.0,"spam_score":0.0,"moderation_score":0.0,"reasoning":"brief"}}"""
         
         try:
-            response = await self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1000,
-                messages=[{"role": "user", "content": prompt}]
+            import asyncio
+            # Use shield to protect from cancellation by other requests
+            response = await asyncio.shield(
+                asyncio.wait_for(
+                    self.client.messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        max_tokens=200,
+                        messages=[{"role": "user", "content": prompt}]
+                    ),
+                    timeout=30.0
+                )
             )
             
             # Parse Claude's response

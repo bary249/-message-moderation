@@ -6,6 +6,8 @@ from app.api.routes import router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle manager."""
+    print("--- Message Moderation API v1.0.6 STARTING ---")
+    print("--- Mode: async-manual (No background polling) ---")
     yield
 
 app = FastAPI(
@@ -34,7 +36,7 @@ app.include_router(router, prefix="/api/v1")
 async def root():
     return {
         "message": "Message Moderation API",
-        "version": "1.0.1",
+        "version": "1.0.6",
         "status": "online",
         "mode": "async-manual"
     }

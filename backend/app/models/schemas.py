@@ -24,6 +24,7 @@ class MessageResponse(BaseModel):
     processed_message: str
     building_id: str
     building_name: Optional[str] = None
+    client_name: Optional[str] = None
     group_id: str
     group_name: Optional[str] = None
     sender_id: str

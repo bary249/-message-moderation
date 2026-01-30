@@ -105,9 +105,13 @@ class SnowflakeService:
             m.UPDATED_AT,
             g.NAME as GROUP_NAME,
             g.TYPE as GROUP_TYPE,
-            g.IS_PUBLIC as GROUP_IS_PUBLIC
+            g.IS_PUBLIC as GROUP_IS_PUBLIC,
+            b.NAME as BUILDING_NAME,
+            o.NAME as CLIENT_NAME
         FROM DWH_V2.BI.DIM_INTREST_GROUP_MESSAGES m
         LEFT JOIN DWH_V2.BI.DIM_INTREST_GROUP g ON m.INTEREST_GROUP_ID = g.INTEREST_GROUP_ID
+        LEFT JOIN DWH_V2.BI.DIM_BUILDINGS b ON m.COMMUNITY_ID = b.COMMUNITY_ID
+        LEFT JOIN DWH_V2.BI.DIM_ORGANIZATION o ON m.ORGANIZATION_ID = o.ID
         WHERE {where_sql}
         ORDER BY m.CREATED_AT DESC
         LIMIT {limit}
@@ -124,9 +128,66 @@ class SnowflakeService:
                 "user_id": row.get("USER_ID"),
                 "interest_group_id": row.get("INTEREST_GROUP_ID"),
                 "community_id": row.get("COMMUNITY_ID"),
+                "building_name": row.get("BUILDING_NAME"),
+                "client_name": row.get("CLIENT_NAME"),
                 "organization_id": row.get("ORGANIZATION_ID"),
-                "created_at": str(row.get("CREATED_AT")),
-                "updated_at": str(row.get("UPDATED_AT")),
+                "created_at": row.get("CREATED_AT"),
+                "updated_at": row.get("UPDATED_AT"),
+                "group_name": row.get("GROUP_NAME"),
+                "group_type": row.get("GROUP_TYPE"),
+                "group_is_public": row.get("GROUP_IS_PUBLIC"),
+            })
+        
+        return messages
+    
+    async def get_messages_by_date(
+        self,
+        target_date: str,
+        limit: int = 1000
+    ) -> List[dict]:
+        """GET: Fetch ALL messages from a specific date (no limit by default)."""
+        # target_date should be in YYYY-MM-DD format
+        query = f"""
+        SELECT 
+            m.ID,
+            m.MESSAGE_ID,
+            m.TEXT,
+            m.USER_ID,
+            m.INTEREST_GROUP_ID,
+            m.COMMUNITY_ID,
+            m.ORGANIZATION_ID,
+            m.CREATED_AT,
+            m.UPDATED_AT,
+            g.NAME as GROUP_NAME,
+            g.TYPE as GROUP_TYPE,
+            g.IS_PUBLIC as GROUP_IS_PUBLIC,
+            b.NAME as BUILDING_NAME,
+            o.NAME as CLIENT_NAME
+        FROM DWH_V2.BI.DIM_INTREST_GROUP_MESSAGES m
+        LEFT JOIN DWH_V2.BI.DIM_INTREST_GROUP g ON m.INTEREST_GROUP_ID = g.INTEREST_GROUP_ID
+        LEFT JOIN DWH_V2.BI.DIM_BUILDINGS b ON m.COMMUNITY_ID = b.COMMUNITY_ID
+        LEFT JOIN DWH_V2.BI.DIM_ORGANIZATION o ON m.ORGANIZATION_ID = o.ID
+        WHERE DATE(m.CREATED_AT) = '{target_date}'
+        ORDER BY m.CREATED_AT DESC
+        LIMIT {limit}
+        """
+        
+        df = await asyncio.to_thread(query_db, query)
+        
+        messages = []
+        for _, row in df.iterrows():
+            messages.append({
+                "id": row.get("ID"),
+                "message_id": row.get("MESSAGE_ID"),
+                "text": row.get("TEXT"),
+                "user_id": row.get("USER_ID"),
+                "interest_group_id": row.get("INTEREST_GROUP_ID"),
+                "community_id": row.get("COMMUNITY_ID"),
+                "building_name": row.get("BUILDING_NAME"),
+                "client_name": row.get("CLIENT_NAME"),
+                "organization_id": row.get("ORGANIZATION_ID"),
+                "created_at": row.get("CREATED_AT"),
+                "updated_at": row.get("UPDATED_AT"),
                 "group_name": row.get("GROUP_NAME"),
                 "group_type": row.get("GROUP_TYPE"),
                 "group_is_public": row.get("GROUP_IS_PUBLIC"),
