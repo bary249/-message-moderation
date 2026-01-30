@@ -57,16 +57,27 @@ export interface Message {
 export interface ModerationQueueResponse {
   pending_messages: Message[];
   total_count: number;
+  unscored_count: number;
   page: number;
   per_page: number;
 }
 
 export const getQueue = async (
   page: number = 1,
-  status: string = 'pending'
+  status: string = 'pending',
+  sortBy: string = 'time_desc',
+  scoreMin?: number,
+  scoreMax?: number
 ): Promise<ModerationQueueResponse> => {
   const response = await api.get('/moderation/queue', {
-    params: { page, status, per_page: 50 }
+    params: { 
+      page, 
+      status, 
+      per_page: 50,
+      sort_by: sortBy,
+      score_min: scoreMin,
+      score_max: scoreMax
+    }
   });
   return response.data;
 };
@@ -135,6 +146,54 @@ export const scoreBatch = async (limit: number = 20): Promise<ScoreBatchResponse
   const response = await api.post('/moderation/score-batch', null, {
     params: { limit }
   });
+  return response.data;
+};
+
+export interface ScoredMessageEvent {
+  message_id: number;
+  moderation_score: number;
+  adversity_score: number;
+  violence_score: number;
+  inappropriate_content_score: number;
+  spam_score: number;
+  processed_message: string;
+}
+
+export interface ScoreStreamCallbacks {
+  onScored?: (data: ScoredMessageEvent) => void;
+  onWaiting?: (data: { status: string; message: string }) => void;
+}
+
+export const scoreStream = (callbacks: ScoreStreamCallbacks): EventSource => {
+  const baseUrl = process.env.REACT_APP_API_URL || '';
+  const url = `${baseUrl}/api/v1/moderation/score-stream`;
+  
+  const eventSource = new EventSource(url);
+  
+  eventSource.addEventListener('scored', (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    callbacks.onScored?.(data);
+  });
+  
+  eventSource.addEventListener('waiting', (e: MessageEvent) => {
+    const data = JSON.parse(e.data);
+    callbacks.onWaiting?.(data);
+  });
+  
+  eventSource.onerror = () => {
+    eventSource.close();
+  };
+  
+  return eventSource;
+};
+
+export const clearAllMessages = async (): Promise<{ status: string; deleted_count: number; message: string }> => {
+  const response = await api.delete('/moderation/clear-all');
+  return response.data;
+};
+
+export const removeDuplicates = async (): Promise<{ status: string; removed: number; remaining: number; message: string }> => {
+  const response = await api.delete('/moderation/remove-duplicates');
   return response.data;
 };
 

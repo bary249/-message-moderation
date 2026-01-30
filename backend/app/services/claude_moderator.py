@@ -55,17 +55,20 @@ Return JSON only:
         
         try:
             import asyncio
-            # Use shield to protect from cancellation by other requests
-            response = await asyncio.shield(
-                asyncio.wait_for(
-                    self.client.messages.create(
-                        model="claude-3-5-haiku-20241022",
-                        max_tokens=200,
-                        messages=[{"role": "user", "content": prompt}]
-                    ),
-                    timeout=30.0
-                )
+            
+            print(f"[ClaudeModerator] Starting API call...")
+            
+            # Simple call with timeout - no retries to avoid complexity
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model="claude-3-5-haiku-20241022",
+                    max_tokens=200,
+                    messages=[{"role": "user", "content": prompt}]
+                ),
+                timeout=30.0
             )
+            
+            print(f"[ClaudeModerator] API call completed")
             
             # Parse Claude's response
             content = response.content[0].text

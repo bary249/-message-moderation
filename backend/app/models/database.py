@@ -65,3 +65,31 @@ class ModerationReview(Base):
     # Relationships
     message = relationship("Message", back_populates="reviews")
     moderator = relationship("Moderator", back_populates="reviews")
+
+
+class ScoredMessage(Base):
+    """Persistent score cache - survives 'Clear All' operations.
+    
+    Key: (group_id, sender_id, message_hash) uniquely identifies a message.
+    When fetching from Snowflake, we check this table first to restore scores.
+    """
+    __tablename__ = "scored_messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Unique identifier for the message (composite key)
+    group_id = Column(String, index=True)
+    sender_id = Column(String, index=True)
+    message_hash = Column(String, index=True)  # Hash of original_message text
+    
+    # Cached scores
+    moderation_score = Column(Float)
+    adversity_score = Column(Float)
+    violence_score = Column(Float)
+    inappropriate_content_score = Column(Float)
+    spam_score = Column(Float)
+    processed_message = Column(Text)  # PII-free version
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

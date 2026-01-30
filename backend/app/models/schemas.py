@@ -30,12 +30,12 @@ class MessageResponse(BaseModel):
     sender_id: str
     message_timestamp: Optional[datetime] = None
     timestamp: datetime
-    moderation_score: float
+    moderation_score: Optional[float] = None
     is_reviewed: Optional[bool] = None
-    adversity_score: float
-    violence_score: float
-    inappropriate_content_score: float
-    spam_score: float
+    adversity_score: Optional[float] = None
+    violence_score: Optional[float] = None
+    inappropriate_content_score: Optional[float] = None
+    spam_score: Optional[float] = None
     created_at: datetime
     reviewed_at: Optional[datetime] = None
 
@@ -93,5 +93,6 @@ class MessageSubmissionResponse(BaseModel):
 class ModerationQueueResponse(BaseModel):
     pending_messages: List[MessageResponse]
     total_count: int
+    unscored_count: int = 0
     page: int
     per_page: int

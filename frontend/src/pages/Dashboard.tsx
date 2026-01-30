@@ -35,16 +35,14 @@ import {
   Logout as LogoutIcon,
   CloudDownload as CloudDownloadIcon,
   CheckCircle as CheckCircleIcon,
-  Psychology as ScoreIcon,
 } from '@mui/icons-material';
-import { getQueue, ingestMessages, reviewMessage, fetchMessagesByDate, scoreBatch, Message } from '../services/api';
+import { getQueue, reviewMessage, fetchMessagesByDate, scoreStream, clearAllMessages, removeDuplicates, Message, ScoredMessageEvent } from '../services/api';
 import { useAuth } from '../services/AuthContext';
 import { format } from 'date-fns';
 
 const Dashboard: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
-  const [ingesting, setIngesting] = useState(false);
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [scoreRange, setScoreRange] = useState<number[]>([0, 100]);
@@ -53,49 +51,62 @@ const Dashboard: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [fetching, setFetching] = useState(false);
-  const [scoring, setScoring] = useState(false);
   const [unscoredCount, setUnscoredCount] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [scoringStatus, setScoringStatus] = useState<string>('idle');
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
   const fetchMessages = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getQueue(page, activeTab);
-      
-      // Filter by score range
-      let filtered = data.pending_messages.filter(
-        (m) => m.moderation_score * 100 >= scoreRange[0] && m.moderation_score * 100 <= scoreRange[1]
+      // Server-side sorting and filtering
+      const data = await getQueue(
+        page, 
+        activeTab, 
+        sortBy === 'time' ? 'time_desc' : sortBy,
+        scoreRange[0] / 100,
+        scoreRange[1] / 100
       );
       
-      // Sort
-      if (sortBy === 'score') {
-        filtered = filtered.sort((a, b) => b.moderation_score - a.moderation_score);
-      } else if (sortBy === 'group') {
-        filtered = filtered.sort((a, b) => 
-          (a.group_name || a.group_id || '').localeCompare(b.group_name || b.group_id || '')
-        );
-      } else if (sortBy === 'time_asc') {
-        filtered = filtered.sort((a, b) => 
-          new Date(a.message_timestamp || a.created_at).getTime() - 
-          new Date(b.message_timestamp || b.created_at).getTime()
-        );
-      } else {
-        // Default: time descending (newest first)
-        filtered = filtered.sort((a, b) => 
-          new Date(b.message_timestamp || b.created_at).getTime() - 
-          new Date(a.message_timestamp || a.created_at).getTime()
-        );
-      }
-      
-      setMessages(filtered);
+      setMessages(data.pending_messages);
       setTotalCount(data.total_count);
+      setUnscoredCount(data.unscored_count);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
     }
     setLoading(false);
   }, [page, scoreRange, sortBy, activeTab]);
+
+  const [clearing, setClearing] = useState(false);
+
+  const handleClearAll = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL messages from the local database? This cannot be undone.')) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const result = await clearAllMessages();
+      setStatusMessage(`Cleared ${result.deleted_count} messages. ${result.message}`);
+      setMessages([]);
+      setTotalCount(0);
+    } catch (error) {
+      console.error('Failed to clear messages:', error);
+      setStatusMessage('Failed to clear messages');
+    }
+    setClearing(false);
+  };
+
+  const handleRemoveDuplicates = async () => {
+    try {
+      const result = await removeDuplicates();
+      setStatusMessage(`Removed ${result.removed} duplicates. ${result.remaining} messages remaining.`);
+      fetchMessages();
+    } catch (error) {
+      console.error('Failed to remove duplicates:', error);
+      setStatusMessage('Failed to remove duplicates');
+    }
+  };
 
   useEffect(() => {
     fetchMessages();
@@ -109,34 +120,7 @@ const Dashboard: React.FC = () => {
     setSortBy(event.target.value);
   };
 
-  const handlePullMessages = async () => {
-    setIngesting(true);
-    try {
-      await ingestMessages();
-      // Poll for messages until they appear (max 45 seconds)
-      let attempts = 0;
-      const maxAttempts = 9; // 9 * 5s = 45 seconds
-      const pollInterval = setInterval(async () => {
-        attempts++;
-        try {
-          const data = await getQueue(1, 'pending');
-          if (data.pending_messages.length > 0 || attempts >= maxAttempts) {
-            clearInterval(pollInterval);
-            setIngesting(false);
-            fetchMessages();
-          }
-        } catch (e) {
-          console.error('Poll error:', e);
-          clearInterval(pollInterval);
-          setIngesting(false);
-        }
-      }, 5000);
-    } catch (error) {
-      console.error('Failed to start ingestion:', error);
-      setIngesting(false);
-    }
-  };
-
+  
   const handleFetchByDate = async () => {
     if (!selectedDate) return;
     setFetching(true);
@@ -153,25 +137,36 @@ const Dashboard: React.FC = () => {
     setFetching(false);
   };
 
-  const handleScoreBatch = async () => {
-    setScoring(true);
-    setStatusMessage(null);
-    try {
-      const result = await scoreBatch(20);
-      if (result.status === 'complete') {
-        setStatusMessage('All messages scored!');
-        setUnscoredCount(0);
-      } else {
-        setStatusMessage(`Scored ${result.scored} messages in ${result.elapsed_seconds}s. ${result.remaining} remaining.`);
-        setUnscoredCount(result.remaining);
+    // Start continuous scoring stream on component mount
+  useEffect(() => {
+    const eventSource = scoreStream({
+      onScored: (data: ScoredMessageEvent) => {
+        // Update the message in the local state immediately
+        setMessages(prev => prev.map(msg => 
+          msg.id === data.message_id 
+            ? {
+                ...msg,
+                moderation_score: data.moderation_score,
+                adversity_score: data.adversity_score,
+                violence_score: data.violence_score,
+                inappropriate_content_score: data.inappropriate_content_score,
+                spam_score: data.spam_score,
+                processed_message: data.processed_message
+              }
+            : msg
+        ));
+        
+        // Update unscored count
+        setUnscoredCount(prev => prev ? prev - 1 : 0);
+        setScoringStatus('scoring');
+      },
+      onWaiting: (data) => {
+        setScoringStatus('waiting');
       }
-      fetchMessages();
-    } catch (error) {
-      console.error('Failed to score batch:', error);
-      setStatusMessage('Error scoring messages');
-    }
-    setScoring(false);
-  };
+    });
+    
+    return () => eventSource.close();
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTabChange = (_: React.SyntheticEvent, newValue: 'pending' | 'reviewed') => {
     setActiveTab(newValue);
@@ -238,33 +233,7 @@ const Dashboard: React.FC = () => {
         </Toolbar>
       </AppBar>
 
-      {/* Loading overlay */}
-      {ingesting && (
-        <Box
-          sx={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            bgcolor: 'rgba(0, 0, 0, 0.6)',
-            zIndex: 9999,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Typography variant="h5" color="white" sx={{ mb: 2 }}>
-            Loading & Scoring Messages...
-          </Typography>
-          <LinearProgress sx={{ width: 300 }} />
-          <Typography variant="body2" color="grey.400" sx={{ mt: 2 }}>
-            This may take up to 30 seconds
-          </Typography>
-        </Box>
-      )}
-
+      
       <Container maxWidth="xl" sx={{ mt: 3 }}>
         {/* Tabs */}
         <Paper sx={{ mb: 2 }}>
@@ -293,14 +262,39 @@ const Dashboard: React.FC = () => {
           >
             {fetching ? 'Fetching...' : 'Fetch Messages'}
           </Button>
+          {scoringStatus === 'scoring' && (
+            <Chip 
+              label="Auto-scoring messages..." 
+              color="info" 
+              variant="outlined"
+              size="small"
+            />
+          )}
+          {scoringStatus === 'waiting' && (
+            <Chip 
+              label="Waiting for messages to score" 
+              color="default" 
+              variant="outlined"
+              size="small"
+            />
+          )}
           <Button
-            variant="contained"
-            color="secondary"
-            onClick={handleScoreBatch}
-            disabled={scoring || unscoredCount === 0}
-            startIcon={<ScoreIcon />}
+            variant="outlined"
+            color="warning"
+            onClick={handleRemoveDuplicates}
+            disabled={totalCount === 0}
+            size="small"
           >
-            {scoring ? 'Scoring...' : 'Score Next 20'}
+            Remove Duplicates
+          </Button>
+          <Button
+            variant="outlined"
+            color="error"
+            onClick={handleClearAll}
+            disabled={clearing || totalCount === 0}
+            size="small"
+          >
+            {clearing ? 'Clearing...' : 'Clear All'}
           </Button>
           {unscoredCount !== null && unscoredCount > 0 && (
             <Chip label={`${unscoredCount} unscored`} color="warning" />
@@ -402,8 +396,8 @@ const Dashboard: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={`${(msg.moderation_score * 100).toFixed(0)}%`}
-                      color={getScoreColor(msg.moderation_score)}
+                      label={msg.moderation_score !== null ? `${(msg.moderation_score * 100).toFixed(0)}%` : 'Unscored'}
+                      color={msg.moderation_score !== null ? getScoreColor(msg.moderation_score) : 'default'}
                       size="small"
                     />
                   </TableCell>

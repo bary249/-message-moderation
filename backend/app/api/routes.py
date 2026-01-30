@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db, SessionLocal
 from app.models.schemas import *
-from app.models.database import Message, Moderator, ModerationReview
+from app.models.database import Message, Moderator, ModerationReview, ScoredMessage
+import hashlib
 from app.services.claude_moderator import ClaudeModerator
 from app.services.snowflake_service import snowflake_service
 from app.core.security import verify_token, verify_password, create_access_token, get_password_hash
@@ -82,6 +83,9 @@ async def get_moderation_queue(
     page: int = 1,
     per_page: int = 20,
     status: Optional[str] = "pending",
+    sort_by: Optional[str] = "time_desc",
+    score_min: Optional[float] = None,
+    score_max: Optional[float] = None,
     current_moderator: Moderator = Depends(get_current_moderator),
     db: Session = Depends(get_db)
 ):
@@ -96,20 +100,60 @@ async def get_moderation_queue(
         query = query.filter(Message.is_reviewed == True)
     # 'all' or any other value returns everything
     
-    # Order by message_timestamp descending (newest first)
-    query = query.order_by(Message.message_timestamp.desc().nullslast())
+    # Filter by score range (only if both are provided)
+    if score_min is not None and score_max is not None:
+        query = query.filter(
+            (Message.moderation_score >= score_min) & 
+            (Message.moderation_score <= score_max) |
+            (Message.moderation_score == None)  # Include unscored
+        )
+    
+    # Server-side sorting
+    if sort_by == "score":
+        query = query.order_by(Message.moderation_score.desc().nullslast())
+    elif sort_by == "group":
+        query = query.order_by(Message.group_name.asc().nullslast())
+    elif sort_by == "time_asc":
+        query = query.order_by(Message.message_timestamp.asc().nullslast())
+    else:  # time_desc (default)
+        query = query.order_by(Message.message_timestamp.desc().nullslast())
     
     # Pagination
     offset = (page - 1) * per_page
     total_count = query.count()
     messages = query.offset(offset).limit(per_page).all()
     
+    # Count unscored messages (across all, not just current page)
+    unscored_count = db.query(Message).filter(Message.moderation_score == None).count()
+    
     return ModerationQueueResponse(
         pending_messages=messages,
         total_count=total_count,
+        unscored_count=unscored_count,
         page=page,
         per_page=per_page
     )
+
+
+# Clear all messages from local database
+@router.delete("/moderation/clear-all")
+async def clear_all_messages(
+    current_moderator: Moderator = Depends(get_current_moderator),
+    db: Session = Depends(get_db)
+):
+    """Delete all messages from the local moderation database.
+    This does NOT affect Snowflake - scores are stored locally only."""
+    
+    count = db.query(Message).count()
+    db.query(ModerationReview).delete()
+    db.query(Message).delete()
+    db.commit()
+    
+    return {
+        "status": "success",
+        "deleted_count": count,
+        "message": "All messages cleared from local database. Scores are NOT persisted to Snowflake."
+    }
 
 # Review a message
 @router.post("/moderation/review/{message_id}", response_model=ReviewResponse)
@@ -164,12 +208,16 @@ async def get_message(
     return message
 
 # Auth endpoints
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 @router.post("/auth/login", response_model=Token)
-async def login(username: str, password: str, db: Session = Depends(get_db)):
+async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """Moderator login"""
     
-    moderator = db.query(Moderator).filter(Moderator.username == username).first()
-    if not moderator or not verify_password(password, moderator.hashed_password):
+    moderator = db.query(Moderator).filter(Moderator.username == login_data.username).first()
+    if not moderator or not verify_password(login_data.password, moderator.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -479,10 +527,18 @@ async def fetch_messages_by_date(
         if existing:
             continue
         
-        # Store WITHOUT moderation scores (null scores = unscored)
+        # Check if we have cached scores for this message
+        msg_hash = hashlib.md5(text.encode()).hexdigest()
+        cached = db.query(ScoredMessage).filter(
+            ScoredMessage.group_id == msg.get("interest_group_id"),
+            ScoredMessage.sender_id == msg.get("user_id"),
+            ScoredMessage.message_hash == msg_hash
+        ).first()
+        
+        # Use cached scores if available, otherwise null (unscored)
         db_message = Message(
             original_message=text,
-            processed_message=text,  # No PII removal yet
+            processed_message=cached.processed_message if cached else text,
             building_id=msg.get("community_id"),
             building_name=msg.get("building_name"),
             client_name=msg.get("client_name"),
@@ -490,17 +546,22 @@ async def fetch_messages_by_date(
             group_name=msg.get("group_name"),
             sender_id=msg.get("user_id"),
             message_timestamp=msg.get("created_at"),
-            moderation_score=None,  # Unscored
-            adversity_score=None,
-            violence_score=None,
-            inappropriate_content_score=None,
-            spam_score=None
+            moderation_score=cached.moderation_score if cached else None,
+            adversity_score=cached.adversity_score if cached else None,
+            violence_score=cached.violence_score if cached else None,
+            inappropriate_content_score=cached.inappropriate_content_score if cached else None,
+            spam_score=cached.spam_score if cached else None
         )
         db.add(db_message)
         new_count += 1
     
     db.commit()
-    print(f"[FETCH] Saved {new_count} new messages (unscored)")
+    
+    # Count how many were restored from cache
+    restored = db.query(Message).filter(
+        Message.moderation_score != None
+    ).count()
+    print(f"[FETCH] Saved {new_count} new messages ({restored} with cached scores)")
     
     return {
         "status": "success",
@@ -508,6 +569,141 @@ async def fetch_messages_by_date(
         "new_messages_saved": new_count,
         "target_date": target_date
     }
+
+
+@router.get("/moderation/score-stream")
+async def score_stream(
+    db: Session = Depends(get_db)
+):
+    """
+    Continuous scoring stream - scores all unscored messages automatically.
+    """
+    from sse_starlette.sse import EventSourceResponse
+    import asyncio
+    import json
+    
+    async def event_generator():
+        while True:
+            # Get unscored messages
+            unscored = db.query(Message).filter(
+                Message.moderation_score == None
+            ).limit(50).all()
+            
+            if not unscored:
+                # No messages to score, wait and check again
+                yield {
+                    "event": "waiting",
+                    "data": json.dumps({
+                        "status": "waiting",
+                        "message": "No unscored messages"
+                    })
+                }
+                await asyncio.sleep(5)
+                continue
+            
+            # Score messages one by one
+            for i, msg in enumerate(unscored):
+                try:
+                    # Score the message with shorter timeout
+                    result = await asyncio.wait_for(
+                        claude_moderator.moderate_message(msg.original_message),
+                        timeout=30.0
+                    )
+                    
+                    # Update message in DB
+                    msg.processed_message = result.processed_message
+                    msg.moderation_score = result.moderation_score
+                    msg.adversity_score = result.adversity_score
+                    msg.violence_score = result.violence_score
+                    msg.inappropriate_content_score = result.inappropriate_content_score
+                    msg.spam_score = result.spam_score
+                    
+                    # Save to persistent cache
+                    msg_hash = hashlib.md5(msg.original_message.encode()).hexdigest()
+                    existing = db.query(ScoredMessage).filter(
+                        ScoredMessage.group_id == msg.group_id,
+                        ScoredMessage.sender_id == msg.sender_id,
+                        ScoredMessage.message_hash == msg_hash
+                    ).first()
+                    
+                    if existing:
+                        existing.moderation_score = msg.moderation_score
+                        existing.adversity_score = msg.adversity_score
+                        existing.violence_score = msg.violence_score
+                        existing.inappropriate_content_score = msg.inappropriate_content_score
+                        existing.spam_score = msg.spam_score
+                        existing.processed_message = msg.processed_message
+                    else:
+                        cached = ScoredMessage(
+                            group_id=msg.group_id,
+                            sender_id=msg.sender_id,
+                            message_hash=msg_hash,
+                            moderation_score=msg.moderation_score,
+                            adversity_score=msg.adversity_score,
+                            violence_score=msg.violence_score,
+                            inappropriate_content_score=msg.inappropriate_content_score,
+                            spam_score=msg.spam_score,
+                            processed_message=msg.processed_message
+                        )
+                        db.add(cached)
+                    
+                    db.commit()
+                    
+                    # Send scored message to client
+                    yield {
+                        "event": "scored",
+                        "data": json.dumps({
+                            "message_id": msg.id,
+                            "moderation_score": msg.moderation_score,
+                            "adversity_score": msg.adversity_score,
+                            "violence_score": msg.violence_score,
+                            "inappropriate_content_score": msg.inappropriate_content_score,
+                            "spam_score": msg.spam_score,
+                            "processed_message": msg.processed_message
+                        })
+                    }
+                    
+                except asyncio.TimeoutError:
+                    # Set default score on timeout
+                    msg.moderation_score = 0.5
+                    msg.processed_message = claude_moderator.remove_pii(msg.original_message)
+                    db.commit()
+                    
+                    yield {
+                        "event": "scored",
+                        "data": json.dumps({
+                            "message_id": msg.id,
+                            "moderation_score": 0.5,
+                            "adversity_score": 0.1,
+                            "violence_score": 0.1,
+                            "inappropriate_content_score": 0.1,
+                            "spam_score": 0.1,
+                            "processed_message": msg.processed_message
+                        })
+                    }
+                except Exception as e:
+                    # Set default score on error
+                    msg.moderation_score = 0.5
+                    msg.processed_message = claude_moderator.remove_pii(msg.original_message)
+                    db.commit()
+                    
+                    yield {
+                        "event": "scored",
+                        "data": json.dumps({
+                            "message_id": msg.id,
+                            "moderation_score": 0.5,
+                            "adversity_score": 0.1,
+                            "violence_score": 0.1,
+                            "inappropriate_content_score": 0.1,
+                            "spam_score": 0.1,
+                            "processed_message": msg.processed_message
+                        })
+                    }
+                
+                # Small delay between requests
+                await asyncio.sleep(0.5)
+    
+    return EventSourceResponse(event_generator())
 
 
 @router.post("/moderation/score-batch")
@@ -541,13 +737,18 @@ async def score_batch(
     print(f"[SCORE] Scoring {len(unscored)} messages ({total_unscored} total unscored)")
     
     start_time = time.time()
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(2)  # Reduced concurrency to avoid rate limits
     scored_count = [0]
+    failed_count = [0]
     
     async def score_message(msg):
         try:
             async with sem:
-                result = await claude_moderator.moderate_message(msg.original_message)
+                # Per-message timeout of 60s
+                result = await asyncio.wait_for(
+                    claude_moderator.moderate_message(msg.original_message),
+                    timeout=60.0
+                )
             msg.processed_message = result.processed_message
             msg.moderation_score = result.moderation_score
             msg.adversity_score = result.adversity_score
@@ -556,22 +757,124 @@ async def score_batch(
             msg.spam_score = result.spam_score
             scored_count[0] += 1
             print(f"[SCORE] {scored_count[0]}/{len(unscored)}: {msg.original_message[:30]}...")
+        except asyncio.TimeoutError:
+            print(f"[SCORE] TIMEOUT: {msg.original_message[:30]}...")
+            msg.moderation_score = 0.5  # Default on timeout
+            failed_count[0] += 1
         except Exception as e:
-            print(f"[SCORE] Error: {e}")
+            print(f"[SCORE] Error ({type(e).__name__}): {e}")
             msg.moderation_score = 0.5  # Default on error
+            failed_count[0] += 1
     
-    tasks = [score_message(msg) for msg in unscored]
-    await asyncio.gather(*tasks)
+    # Process sequentially to avoid rate limits (more reliable)
+    print(f"[SCORE] Starting sequential processing...")
+    for i, msg in enumerate(unscored):
+        print(f"[SCORE] Processing message {i+1}...")
+        await score_message(msg)
+        await asyncio.sleep(0.3)  # Small delay between requests
+    
+    # Save scores to persistent cache
+    for msg in unscored:
+        if msg.moderation_score is not None:
+            msg_hash = hashlib.md5(msg.original_message.encode()).hexdigest()
+            existing = db.query(ScoredMessage).filter(
+                ScoredMessage.group_id == msg.group_id,
+                ScoredMessage.sender_id == msg.sender_id,
+                ScoredMessage.message_hash == msg_hash
+            ).first()
+            
+            if existing:
+                existing.moderation_score = msg.moderation_score
+                existing.adversity_score = msg.adversity_score
+                existing.violence_score = msg.violence_score
+                existing.inappropriate_content_score = msg.inappropriate_content_score
+                existing.spam_score = msg.spam_score
+                existing.processed_message = msg.processed_message
+            else:
+                cached = ScoredMessage(
+                    group_id=msg.group_id,
+                    sender_id=msg.sender_id,
+                    message_hash=msg_hash,
+                    moderation_score=msg.moderation_score,
+                    adversity_score=msg.adversity_score,
+                    violence_score=msg.violence_score,
+                    inappropriate_content_score=msg.inappropriate_content_score,
+                    spam_score=msg.spam_score,
+                    processed_message=msg.processed_message
+                )
+                db.add(cached)
     
     db.commit()
     elapsed = time.time() - start_time
     remaining = total_unscored - len(unscored)
     
-    print(f"[SCORE] Complete in {elapsed:.1f}s. {remaining} messages remaining.")
+    print(f"[SCORE] Complete in {elapsed:.1f}s. {remaining} messages remaining. Scores cached.")
     
     return {
         "status": "success",
         "scored": len(unscored),
         "remaining": remaining,
         "elapsed_seconds": round(elapsed, 1)
+    }
+
+
+# Helper to get message hash
+def get_message_hash(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+@router.delete("/moderation/remove-duplicates")
+async def remove_duplicates(
+    current_moderator: Moderator = Depends(get_current_moderator),
+    db: Session = Depends(get_db)
+):
+    """Remove duplicate messages (same group_id, sender_id, original_message)."""
+    from sqlalchemy import func
+    
+    # Find duplicates
+    subq = db.query(
+        Message.group_id,
+        Message.sender_id,
+        Message.original_message,
+        func.min(Message.id).label('keep_id')
+    ).group_by(
+        Message.group_id,
+        Message.sender_id,
+        Message.original_message
+    ).subquery()
+    
+    # Get all IDs to keep
+    keep_ids = db.query(subq.c.keep_id).all()
+    keep_ids = [r[0] for r in keep_ids]
+    
+    # Count before
+    total_before = db.query(Message).count()
+    
+    # Delete duplicates (not in keep list)
+    if keep_ids:
+        db.query(Message).filter(~Message.id.in_(keep_ids)).delete(synchronize_session=False)
+    
+    db.commit()
+    
+    total_after = db.query(Message).count()
+    removed = total_before - total_after
+    
+    return {
+        "status": "success",
+        "removed": removed,
+        "remaining": total_after,
+        "message": f"Removed {removed} duplicate messages"
+    }
+
+
+@router.get("/moderation/score-cache-stats")
+async def get_score_cache_stats(
+    current_moderator: Moderator = Depends(get_current_moderator),
+    db: Session = Depends(get_db)
+):
+    """Get stats about the persistent score cache."""
+    total_cached = db.query(ScoredMessage).count()
+    return {
+        "cached_scores": total_cached,
+        "message": "Scores in cache will be restored when fetching messages"
     }
