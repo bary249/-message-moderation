@@ -32,7 +32,12 @@ app.include_router(router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
-    return {"message": "Message Moderation API"}
+    return {
+        "message": "Message Moderation API",
+        "version": "1.0.1",
+        "status": "online",
+        "mode": "async-manual"
+    }
 
 if __name__ == "__main__":
     import uvicorn
