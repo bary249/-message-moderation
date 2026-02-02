@@ -67,13 +67,14 @@ export const getQueue = async (
   status: string = 'pending',
   sortBy: string = 'time_desc',
   scoreMin?: number,
-  scoreMax?: number
+  scoreMax?: number,
+  perPage: number = 50
 ): Promise<ModerationQueueResponse> => {
   const response = await api.get('/moderation/queue', {
     params: { 
       page, 
       status, 
-      per_page: 50,
+      per_page: perPage,
       sort_by: sortBy,
       score_min: scoreMin,
       score_max: scoreMax

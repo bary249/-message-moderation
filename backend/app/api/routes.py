@@ -213,11 +213,23 @@ class LoginRequest(BaseModel):
     password: str
 
 @router.post("/auth/login", response_model=Token)
-async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
-    """Moderator login"""
+async def login(
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    login_data: Optional[LoginRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """Moderator login - accepts both query params and JSON body"""
+    # Support both query params and JSON body
+    if login_data:
+        username = login_data.username
+        password = login_data.password
     
-    moderator = db.query(Moderator).filter(Moderator.username == login_data.username).first()
-    if not moderator or not verify_password(login_data.password, moderator.hashed_password):
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+    
+    moderator = db.query(Moderator).filter(Moderator.username == username).first()
+    if not moderator or not verify_password(password, moderator.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -877,4 +889,222 @@ async def get_score_cache_stats(
     return {
         "cached_scores": total_cached,
         "message": "Scores in cache will be restored when fetching messages"
+    }
+
+
+@router.get("/cron/ping")
+async def cron_ping():
+    """Simple ping to keep the server awake. Use every 5-10 min."""
+    return {"status": "ok", "message": "Server is awake"}
+
+
+@router.post("/cron/fetch")
+async def cron_fetch(
+    days: int = 1,
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch-only endpoint for cron. Fast, no scoring.
+    Call every 15-30 minutes.
+    """
+    from datetime import datetime, timedelta
+    
+    fetched = 0
+    for i in range(days):
+        date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            if snowflake_service.is_available():
+                messages = await snowflake_service.get_messages_by_date(date)
+                for msg in messages:
+                    text = msg.get("text", "")
+                    if not text or text.strip() == "" or text == "📷 image":
+                        continue
+                    
+                    existing = db.query(Message).filter(
+                        Message.group_id == msg.get("interest_group_id"),
+                        Message.sender_id == msg.get("user_id"),
+                        Message.original_message == text
+                    ).first()
+                    
+                    if not existing:
+                        db_message = Message(
+                            original_message=text,
+                            processed_message=text,
+                            building_id=msg.get("community_id"),
+                            building_name=msg.get("building_name"),
+                            client_name=msg.get("client_name"),
+                            group_id=msg.get("interest_group_id"),
+                            group_name=msg.get("group_name"),
+                            sender_id=msg.get("user_id"),
+                            message_timestamp=msg.get("created_at")
+                        )
+                        db.add(db_message)
+                        fetched += 1
+                db.commit()
+        except Exception as e:
+            return {"status": "error", "error": str(e), "fetched": fetched}
+    
+    return {"status": "ok", "fetched": fetched}
+
+
+@router.post("/cron/score")
+async def cron_score(
+    limit: int = 3,
+    db: Session = Depends(get_db)
+):
+    """
+    Score a few messages. Fast, designed for cron.
+    Call every 5 minutes to gradually score messages.
+    """
+    unscored = db.query(Message).filter(Message.moderation_score == None).limit(limit).all()
+    
+    if not unscored:
+        return {"status": "ok", "scored": 0, "remaining": 0}
+    
+    scored = 0
+    for msg in unscored:
+        try:
+            result = await claude_moderator.moderate_message(msg.original_message)
+            msg.moderation_score = result.moderation_score
+            msg.processed_message = result.processed_message
+            msg.adversity_score = result.adversity_score
+            msg.violence_score = result.violence_score
+            msg.inappropriate_content_score = result.inappropriate_content_score
+            msg.spam_score = result.spam_score
+            scored += 1
+        except Exception as e:
+            return {"status": "partial", "scored": scored, "error": str(e)}
+    
+    db.commit()
+    remaining = db.query(Message).filter(Message.moderation_score == None).count()
+    
+    return {"status": "ok", "scored": scored, "remaining": remaining}
+
+
+@router.post("/moderation/auto-refresh")
+async def auto_refresh(
+    days: int = 1,
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch only - NO scoring. Scoring is done by background worker.
+    Safe for cron jobs.
+    """
+    from datetime import datetime, timedelta
+    
+    results = {"fetched": 0}
+    
+    # Only fetch, don't score (scoring is background)
+    for i in range(days):
+        date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            if snowflake_service.is_available():
+                messages = await snowflake_service.get_messages_by_date(date)
+                for msg in messages:
+                    text = msg.get("text", "")
+                    if not text or text.strip() == "" or text == "📷 image":
+                        continue
+                    
+                    existing = db.query(Message).filter(
+                        Message.group_id == msg.get("interest_group_id"),
+                        Message.sender_id == msg.get("user_id"),
+                        Message.original_message == text
+                    ).first()
+                    
+                    if not existing:
+                        db_message = Message(
+                            original_message=text,
+                            processed_message=text,
+                            building_id=msg.get("community_id"),
+                            building_name=msg.get("building_name"),
+                            client_name=msg.get("client_name"),
+                            group_id=msg.get("interest_group_id"),
+                            group_name=msg.get("group_name"),
+                            sender_id=msg.get("user_id"),
+                            message_timestamp=msg.get("created_at")
+                        )
+                        db.add(db_message)
+                        results["fetched"] += 1
+                db.commit()
+        except Exception as e:
+            results["error"] = str(e)
+    
+    # Return unscored count for monitoring
+    unscored = db.query(Message).filter(Message.moderation_score == None).count()
+    results["unscored"] = unscored
+    
+    return results
+
+
+@router.post("/moderation/bulk-import")
+async def bulk_import_messages(
+    messages: List[dict],
+    db: Session = Depends(get_db)
+):
+    """Bulk import scored messages. Used to sync local data to deployed backend."""
+    from datetime import datetime as dt
+    
+    def parse_timestamp(ts):
+        if not ts:
+            return None
+        if isinstance(ts, str):
+            try:
+                return dt.fromisoformat(ts.replace(' ', 'T'))
+            except:
+                return None
+        return ts
+    
+    imported = 0
+    skipped = 0
+    
+    for msg_data in messages:
+        try:
+            # Check if exists
+            existing = db.query(Message).filter(
+                Message.group_id == msg_data.get("group_id"),
+                Message.sender_id == msg_data.get("sender_id"),
+                Message.original_message == msg_data.get("original_message")
+            ).first()
+            
+            if existing:
+                # Update scores if exists
+                existing.moderation_score = msg_data.get("moderation_score")
+                existing.adversity_score = msg_data.get("adversity_score")
+                existing.violence_score = msg_data.get("violence_score")
+                existing.inappropriate_content_score = msg_data.get("inappropriate_content_score")
+                existing.spam_score = msg_data.get("spam_score")
+                existing.processed_message = msg_data.get("processed_message")
+                skipped += 1
+            else:
+                # Create new
+                db_message = Message(
+                    original_message=msg_data.get("original_message"),
+                    processed_message=msg_data.get("processed_message"),
+                    building_id=msg_data.get("building_id"),
+                    building_name=msg_data.get("building_name"),
+                    client_name=msg_data.get("client_name"),
+                    group_id=msg_data.get("group_id"),
+                    group_name=msg_data.get("group_name"),
+                    sender_id=msg_data.get("sender_id"),
+                    message_timestamp=parse_timestamp(msg_data.get("message_timestamp")),
+                    moderation_score=msg_data.get("moderation_score"),
+                    adversity_score=msg_data.get("adversity_score"),
+                    violence_score=msg_data.get("violence_score"),
+                    inappropriate_content_score=msg_data.get("inappropriate_content_score"),
+                    spam_score=msg_data.get("spam_score"),
+                    is_reviewed=msg_data.get("is_reviewed", False)
+                )
+                db.add(db_message)
+                imported += 1
+        except Exception as e:
+            print(f"Error importing message: {e}")
+            continue
+    
+    db.commit()
+    
+    return {
+        "status": "success",
+        "imported": imported,
+        "updated": skipped,
+        "total": len(messages)
     }

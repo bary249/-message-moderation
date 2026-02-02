@@ -76,7 +76,7 @@ const MessageDetail: React.FC = () => {
     setSubmitting(true);
     try {
       await reviewMessage(parseInt(id), 'reviewed', reasoning);
-      navigate('/');
+      navigate(-1);  // Go back to preserve filters
     } catch (error) {
       console.error('Failed to mark as reviewed:', error);
     }
@@ -102,7 +102,7 @@ const MessageDetail: React.FC = () => {
           <IconButton
             edge="start"
             color="inherit"
-            onClick={() => navigate('/')}
+            onClick={() => navigate(-1)}
             sx={{ mr: 2 }}
           >
             <BackIcon />

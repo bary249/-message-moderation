@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Box,
   Container,
@@ -17,7 +17,6 @@ import {
   Toolbar,
   Button,
   LinearProgress,
-  Pagination,
   Slider,
   FormControl,
   InputLabel,
@@ -41,13 +40,21 @@ import { useAuth } from '../services/AuthContext';
 import { format } from 'date-fns';
 
 const Dashboard: React.FC = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
-  const [scoreRange, setScoreRange] = useState<number[]>([0, 100]);
-  const [sortBy, setSortBy] = useState<string>('time');
-  const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
+  
+  // Initialize state from URL params (persist filters across navigation)
+  const [scoreRange, setScoreRange] = useState<number[]>(() => {
+    const min = searchParams.get('scoreMin');
+    const max = searchParams.get('scoreMax');
+    return [min ? parseInt(min) : 0, max ? parseInt(max) : 100];
+  });
+  const [sortBy, setSortBy] = useState<string>(() => searchParams.get('sort') || 'time');
+  const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>(() => 
+    (searchParams.get('tab') as 'pending' | 'reviewed') || 'pending'
+  );
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [fetching, setFetching] = useState(false);
@@ -57,16 +64,27 @@ const Dashboard: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
+  // Update URL params when filters change
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (scoreRange[0] !== 0) params.scoreMin = String(scoreRange[0]);
+    if (scoreRange[1] !== 100) params.scoreMax = String(scoreRange[1]);
+    if (sortBy !== 'time') params.sort = sortBy;
+    if (activeTab !== 'pending') params.tab = activeTab;
+    setSearchParams(params, { replace: true });
+  }, [scoreRange, sortBy, activeTab, setSearchParams]);
+
   const fetchMessages = useCallback(async () => {
     setLoading(true);
     try {
       // Server-side sorting and filtering
       const data = await getQueue(
-        page, 
+        1,  // Always page 1
         activeTab, 
         sortBy === 'time' ? 'time_desc' : sortBy,
         scoreRange[0] / 100,
-        scoreRange[1] / 100
+        scoreRange[1] / 100,
+        1000  // Load up to 1000 messages
       );
       
       setMessages(data.pending_messages);
@@ -76,7 +94,7 @@ const Dashboard: React.FC = () => {
       console.error('Failed to fetch messages:', error);
     }
     setLoading(false);
-  }, [page, scoreRange, sortBy, activeTab]);
+  }, [scoreRange, sortBy, activeTab]);
 
   const [clearing, setClearing] = useState(false);
 
@@ -110,7 +128,7 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     fetchMessages();
-  }, [page, scoreRange, sortBy, activeTab]);
+  }, [fetchMessages]);
 
   const handleScoreChange = (_: Event, newValue: number | number[]) => {
     setScoreRange(newValue as number[]);
@@ -137,40 +155,25 @@ const Dashboard: React.FC = () => {
     setFetching(false);
   };
 
-    // Start continuous scoring stream on component mount
-  useEffect(() => {
-    const eventSource = scoreStream({
-      onScored: (data: ScoredMessageEvent) => {
-        // Update the message in the local state immediately
-        setMessages(prev => prev.map(msg => 
-          msg.id === data.message_id 
-            ? {
-                ...msg,
-                moderation_score: data.moderation_score,
-                adversity_score: data.adversity_score,
-                violence_score: data.violence_score,
-                inappropriate_content_score: data.inappropriate_content_score,
-                spam_score: data.spam_score,
-                processed_message: data.processed_message
-              }
-            : msg
-        ));
-        
-        // Update unscored count
-        setUnscoredCount(prev => prev ? prev - 1 : 0);
-        setScoringStatus('scoring');
-      },
-      onWaiting: (data) => {
-        setScoringStatus('waiting');
-      }
-    });
-    
-    return () => eventSource.close();
-  }); // eslint-disable-line react-hooks/exhaustive-deps
+    // Score stream disabled - was causing connection issues
+  // useEffect(() => {
+  //   const eventSource = scoreStream({
+  //     onScored: (data: ScoredMessageEvent) => {
+  //       setMessages(prev => prev.map(msg => 
+  //         msg.id === data.message_id 
+  //           ? { ...msg, ...data }
+  //           : msg
+  //       ));
+  //       setUnscoredCount(prev => prev ? prev - 1 : 0);
+  //       setScoringStatus('scoring');
+  //     },
+  //     onWaiting: () => setScoringStatus('waiting')
+  //   });
+  //   return () => eventSource.close();
+  // }, []);
 
   const handleTabChange = (_: React.SyntheticEvent, newValue: 'pending' | 'reviewed') => {
     setActiveTab(newValue);
-    setPage(1);
     setSelectedIds([]);
   };
 
@@ -450,14 +453,7 @@ const Dashboard: React.FC = () => {
           </Table>
         </TableContainer>
 
-        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-          <Pagination
-            count={Math.ceil(totalCount / 20)}
-            page={page}
-            onChange={(_, v) => setPage(v)}
-            color="primary"
-          />
-        </Box>
+        {/* All messages loaded - no pagination needed */}
       </Container>
     </Box>
   );
