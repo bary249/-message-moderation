@@ -68,7 +68,8 @@ export const getQueue = async (
   sortBy: string = 'time_desc',
   scoreMin?: number,
   scoreMax?: number,
-  perPage: number = 50
+  perPage: number = 50,
+  clientName?: string
 ): Promise<ModerationQueueResponse> => {
   const response = await api.get('/moderation/queue', {
     params: { 
@@ -77,9 +78,15 @@ export const getQueue = async (
       per_page: perPage,
       sort_by: sortBy,
       score_min: scoreMin,
-      score_max: scoreMax
+      score_max: scoreMax,
+      client_name: clientName || undefined
     }
   });
+  return response.data;
+};
+
+export const getClients = async (): Promise<{clients: string[]}> => {
+  const response = await api.get('/moderation/clients');
   return response.data;
 };
 
@@ -131,6 +138,21 @@ export interface FetchByDateResponse {
 export const fetchMessagesByDate = async (targetDate: string): Promise<FetchByDateResponse> => {
   const response = await api.post('/snowflake/fetch-by-date', null, {
     params: { target_date: targetDate }
+  });
+  return response.data;
+};
+
+export interface FetchByDateRangeResponse {
+  status: string;
+  fetched_from_snowflake: number;
+  new_messages_saved: number;
+  start_date: string;
+  end_date: string;
+}
+
+export const fetchMessagesByDateRange = async (startDate: string, endDate: string): Promise<FetchByDateRangeResponse> => {
+  const response = await api.post('/snowflake/fetch-by-date-range', null, {
+    params: { start_date: startDate, end_date: endDate }
   });
   return response.data;
 };

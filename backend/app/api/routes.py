@@ -86,6 +86,7 @@ async def get_moderation_queue(
     sort_by: Optional[str] = "time_desc",
     score_min: Optional[float] = None,
     score_max: Optional[float] = None,
+    client_name: Optional[str] = None,
     current_moderator: Moderator = Depends(get_current_moderator),
     db: Session = Depends(get_db)
 ):
@@ -107,6 +108,10 @@ async def get_moderation_queue(
             (Message.moderation_score <= score_max) |
             (Message.moderation_score == None)  # Include unscored
         )
+    
+    # Filter by client name
+    if client_name:
+        query = query.filter(Message.client_name == client_name)
     
     # Server-side sorting
     if sort_by == "score":
@@ -133,6 +138,21 @@ async def get_moderation_queue(
         page=page,
         per_page=per_page
     )
+
+
+# Get unique client names for filtering
+@router.get("/moderation/clients")
+async def get_client_list(
+    current_moderator: Moderator = Depends(get_current_moderator),
+    db: Session = Depends(get_db)
+):
+    """Get list of unique client names from messages."""
+    from sqlalchemy import distinct
+    clients = db.query(distinct(Message.client_name)).filter(
+        Message.client_name != None,
+        Message.client_name != ''
+    ).order_by(Message.client_name).all()
+    return {"clients": [c[0] for c in clients if c[0]]}
 
 
 # Clear all messages from local database
@@ -583,6 +603,86 @@ async def fetch_messages_by_date(
     }
 
 
+@router.post("/snowflake/fetch-by-date-range")
+async def fetch_messages_by_date_range(
+    start_date: str,
+    end_date: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch ALL messages from Snowflake for a date range and store them WITHOUT scoring.
+    """
+    if not snowflake_service.is_available():
+        raise HTTPException(status_code=503, detail="Snowflake not configured")
+    
+    from datetime import datetime, timedelta
+    
+    start = datetime.strptime(start_date, '%Y-%m-%d')
+    end = datetime.strptime(end_date, '%Y-%m-%d')
+    
+    total_fetched = 0
+    total_new = 0
+    
+    current = start
+    while current <= end:
+        date_str = current.strftime('%Y-%m-%d')
+        print(f"[FETCH] Fetching messages for date: {date_str}")
+        
+        messages = await snowflake_service.get_messages_by_date(date_str)
+        total_fetched += len(messages)
+        
+        for msg in messages:
+            text = msg.get("text", "")
+            if not text or text.strip() == "" or text == "📷 image":
+                continue
+            
+            existing = db.query(Message).filter(
+                Message.group_id == msg.get("interest_group_id"),
+                Message.sender_id == msg.get("user_id"),
+                Message.original_message == text
+            ).first()
+            
+            if existing:
+                continue
+            
+            msg_hash = hashlib.md5(text.encode()).hexdigest()
+            cached = db.query(ScoredMessage).filter(
+                ScoredMessage.group_id == msg.get("interest_group_id"),
+                ScoredMessage.sender_id == msg.get("user_id"),
+                ScoredMessage.message_hash == msg_hash
+            ).first()
+            
+            db_message = Message(
+                original_message=text,
+                processed_message=cached.processed_message if cached else text,
+                building_id=msg.get("community_id"),
+                building_name=msg.get("building_name"),
+                client_name=msg.get("client_name"),
+                group_id=msg.get("interest_group_id"),
+                group_name=msg.get("group_name"),
+                sender_id=msg.get("user_id"),
+                message_timestamp=msg.get("created_at"),
+                moderation_score=cached.moderation_score if cached else None,
+                adversity_score=cached.adversity_score if cached else None,
+                violence_score=cached.violence_score if cached else None,
+                inappropriate_content_score=cached.inappropriate_content_score if cached else None,
+                spam_score=cached.spam_score if cached else None
+            )
+            db.add(db_message)
+            total_new += 1
+        
+        db.commit()
+        current += timedelta(days=1)
+    
+    return {
+        "status": "success",
+        "fetched_from_snowflake": total_fetched,
+        "new_messages_saved": total_new,
+        "start_date": start_date,
+        "end_date": end_date
+    }
+
+
 @router.get("/moderation/score-stream")
 async def score_stream(
     db: Session = Depends(get_db)
@@ -840,43 +940,62 @@ async def remove_duplicates(
     current_moderator: Moderator = Depends(get_current_moderator),
     db: Session = Depends(get_db)
 ):
-    """Remove duplicate messages (same group_id, sender_id, original_message)."""
-    from sqlalchemy import func
+    """Remove duplicate messages (same group_id, sender_id, original_message). Skip reviewed messages."""
+    import traceback
     
-    # Find duplicates
-    subq = db.query(
-        Message.group_id,
-        Message.sender_id,
-        Message.original_message,
-        func.min(Message.id).label('keep_id')
-    ).group_by(
-        Message.group_id,
-        Message.sender_id,
-        Message.original_message
-    ).subquery()
-    
-    # Get all IDs to keep
-    keep_ids = db.query(subq.c.keep_id).all()
-    keep_ids = [r[0] for r in keep_ids]
-    
-    # Count before
-    total_before = db.query(Message).count()
-    
-    # Delete duplicates (not in keep list)
-    if keep_ids:
-        db.query(Message).filter(~Message.id.in_(keep_ids)).delete(synchronize_session=False)
-    
-    db.commit()
-    
-    total_after = db.query(Message).count()
-    removed = total_before - total_after
-    
-    return {
-        "status": "success",
-        "removed": removed,
-        "remaining": total_after,
-        "message": f"Removed {removed} duplicate messages"
-    }
+    try:
+        print("[DEDUP] Starting duplicate removal...")
+        total_before = db.query(Message).count()
+        print(f"[DEDUP] Total messages before: {total_before}")
+        
+        # Get IDs of messages that have reviews (can't delete these)
+        reviewed_ids = set(r[0] for r in db.query(ModerationReview.message_id).distinct().all())
+        print(f"[DEDUP] Found {len(reviewed_ids)} messages with reviews (will skip)")
+        
+        # Load all messages and find duplicates in Python
+        all_messages = db.query(Message.id, Message.group_id, Message.sender_id, Message.original_message).all()
+        print(f"[DEDUP] Loaded {len(all_messages)} messages")
+        
+        # Track seen combinations, keep first occurrence
+        seen = {}
+        ids_to_delete = []
+        
+        for msg_id, group_id, sender_id, text in all_messages:
+            key = (group_id, sender_id, text)
+            if key in seen:
+                # Only delete if no review exists
+                if msg_id not in reviewed_ids:
+                    ids_to_delete.append(msg_id)
+            else:
+                seen[key] = msg_id
+        
+        print(f"[DEDUP] Found {len(ids_to_delete)} duplicates to remove (excluding reviewed)")
+        
+        # Delete in small batches
+        deleted = 0
+        if ids_to_delete:
+            batch_size = 50
+            for i in range(0, len(ids_to_delete), batch_size):
+                batch = ids_to_delete[i:i + batch_size]
+                db.query(Message).filter(Message.id.in_(batch)).delete(synchronize_session=False)
+                deleted += len(batch)
+            db.commit()
+        
+        total_after = db.query(Message).count()
+        removed = total_before - total_after
+        print(f"[DEDUP] Done. Removed {removed}, remaining {total_after}")
+        
+        return {
+            "status": "success",
+            "removed": removed,
+            "remaining": total_after,
+            "message": f"Removed {removed} duplicate messages"
+        }
+    except Exception as e:
+        print(f"[DEDUP] ERROR: {str(e)}")
+        print(traceback.format_exc())
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to remove duplicates: {str(e)}")
 
 
 @router.get("/moderation/score-cache-stats")

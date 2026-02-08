@@ -35,7 +35,7 @@ import {
   CloudDownload as CloudDownloadIcon,
   CheckCircle as CheckCircleIcon,
 } from '@mui/icons-material';
-import { getQueue, reviewMessage, fetchMessagesByDate, scoreStream, clearAllMessages, removeDuplicates, Message, ScoredMessageEvent } from '../services/api';
+import { getQueue, reviewMessage, fetchMessagesByDateRange, scoreStream, clearAllMessages, removeDuplicates, getClients, Message, ScoredMessageEvent } from '../services/api';
 import { useAuth } from '../services/AuthContext';
 import { format } from 'date-fns';
 
@@ -56,8 +56,11 @@ const Dashboard: React.FC = () => {
     (searchParams.get('tab') as 'pending' | 'reviewed') || 'pending'
   );
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
   const [fetching, setFetching] = useState(false);
+  const [clients, setClients] = useState<string[]>([]);
+  const [selectedClient, setSelectedClient] = useState<string>('');
   const [unscoredCount, setUnscoredCount] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [scoringStatus, setScoringStatus] = useState<string>('idle');
@@ -84,7 +87,8 @@ const Dashboard: React.FC = () => {
         sortBy === 'time' ? 'time_desc' : sortBy,
         scoreRange[0] / 100,
         scoreRange[1] / 100,
-        1000  // Load up to 1000 messages
+        1000,  // Load up to 1000 messages
+        selectedClient || undefined
       );
       
       setMessages(data.pending_messages);
@@ -94,7 +98,20 @@ const Dashboard: React.FC = () => {
       console.error('Failed to fetch messages:', error);
     }
     setLoading(false);
-  }, [scoreRange, sortBy, activeTab]);
+  }, [scoreRange, sortBy, activeTab, selectedClient]);
+
+  // Fetch client list on mount
+  useEffect(() => {
+    const loadClients = async () => {
+      try {
+        const data = await getClients();
+        setClients(data.clients);
+      } catch (error) {
+        console.error('Failed to fetch clients:', error);
+      }
+    };
+    loadClients();
+  }, []);
 
   const [clearing, setClearing] = useState(false);
 
@@ -139,20 +156,24 @@ const Dashboard: React.FC = () => {
   };
 
   
-  const handleFetchByDate = async () => {
-    if (!selectedDate) return;
+  const handleFetchByDateRange = async () => {
+    if (!startDate || !endDate) return;
     setFetching(true);
     setStatusMessage(null);
     try {
-      const result = await fetchMessagesByDate(selectedDate);
+      const result = await fetchMessagesByDateRange(startDate, endDate);
       setStatusMessage(`Fetched ${result.fetched_from_snowflake} messages, ${result.new_messages_saved} new (unscored)`);
       setUnscoredCount(result.new_messages_saved);
       fetchMessages();
     } catch (error) {
-      console.error('Failed to fetch by date:', error);
+      console.error('Failed to fetch by date range:', error);
       setStatusMessage('Error fetching messages');
     }
     setFetching(false);
+  };
+
+  const handleClientChange = (event: SelectChangeEvent) => {
+    setSelectedClient(event.target.value);
   };
 
     // Score stream disabled - was causing connection issues
@@ -246,21 +267,30 @@ const Dashboard: React.FC = () => {
           </Tabs>
         </Paper>
 
-        {/* Date Picker & Fetch Controls */}
+        {/* Date Range Picker & Fetch Controls */}
         <Paper sx={{ p: 2, mb: 2, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
           <TextField
             type="date"
             size="small"
-            label="Select Date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            label="Start Date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
             InputLabelProps={{ shrink: true }}
-            sx={{ width: 180 }}
+            sx={{ width: 160 }}
+          />
+          <TextField
+            type="date"
+            size="small"
+            label="End Date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+            sx={{ width: 160 }}
           />
           <Button
             variant="contained"
-            onClick={handleFetchByDate}
-            disabled={!selectedDate || fetching}
+            onClick={handleFetchByDateRange}
+            disabled={!startDate || !endDate || fetching}
             startIcon={<CloudDownloadIcon />}
           >
             {fetching ? 'Fetching...' : 'Fetch Messages'}
@@ -326,6 +356,15 @@ const Dashboard: React.FC = () => {
               <MenuItem value="time_asc">Oldest First</MenuItem>
               <MenuItem value="group">Group Name</MenuItem>
               <MenuItem value="score">Highest Score</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel>Filter by Client</InputLabel>
+            <Select value={selectedClient} label="Filter by Client" onChange={handleClientChange}>
+              <MenuItem value="">All Clients</MenuItem>
+              {clients.map((client) => (
+                <MenuItem key={client} value={client}>{client}</MenuItem>
+              ))}
             </Select>
           </FormControl>
           <Typography variant="body2" color="text.secondary">
