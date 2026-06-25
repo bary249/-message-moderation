@@ -1,0 +1,40 @@
+name: ingest
+
+# Replaces the old external keep-alive cron, which only pinged the root "/" URL
+# and never ingested anything (that is why the moderation queue silently froze).
+#
+# This workflow pulls new messages from Snowflake into the moderation DB and
+# scores them. The endpoints are public (unauthenticated), so no secrets are
+# required. NOTE: scheduled workflows only run from the default branch (main).
+
+on:
+  schedule:
+    # Every ~10 minutes. GitHub may delay or coalesce scheduled runs under load.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # allow manual "Run workflow" / `gh workflow run ingest.yml`
+
+# Never let runs pile up on top of each other (Snowflake cold starts can be slow).
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      API: https://message-moderation-production.up.railway.app/api/v1
+    steps:
+      - name: Wake server (keep-alive)
+        run: curl -fsS -m 90 "$API/cron/ping" -w '\n[%{http_code}]\n' || true
+
+      - name: Fetch new messages from Snowflake
+        # POST works on the currently-deployed code (the GET alias is not deployed
+        # yet). -f => fail the step on an error status once the hardened build ships.
+        run: curl -fsS -m 300 -X POST "$API/cron/fetch?days=1" -w '\n[%{http_code}]\n'
+
+      - name: Score pending messages (best-effort)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "== score batch $i =="
+            curl -fsS -m 180 -X POST "$API/moderation/score-batch?limit=20" -w '\n[%{http_code}]\n' || true
+          done
