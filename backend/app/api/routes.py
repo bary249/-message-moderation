@@ -1017,14 +1017,14 @@ async def cron_ping():
     return {"status": "ok", "message": "Server is awake"}
 
 
-@router.post("/cron/fetch")
+@router.api_route("/cron/fetch", methods=["GET", "POST"])
 async def cron_fetch(
     days: int = 1,
     db: Session = Depends(get_db)
 ):
     """
     Fetch-only endpoint for cron. Fast, no scoring.
-    Call every 15-30 minutes.
+    Call every 15-30 minutes. Accepts GET or POST so simple uptime pingers work.
     """
     from datetime import datetime, timedelta
     
@@ -1061,19 +1061,25 @@ async def cron_fetch(
                         fetched += 1
                 db.commit()
         except Exception as e:
-            return {"status": "error", "error": str(e), "fetched": fetched}
-    
+            # Surface failures with a real error status instead of masking them
+            # as HTTP 200 — a cron/monitor must be able to SEE ingestion break.
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"cron/fetch failed for {date} (fetched {fetched} so far): {e}"
+            )
+
     return {"status": "ok", "fetched": fetched}
 
 
-@router.post("/cron/score")
+@router.api_route("/cron/score", methods=["GET", "POST"])
 async def cron_score(
     limit: int = 3,
     db: Session = Depends(get_db)
 ):
     """
     Score a few messages. Fast, designed for cron.
-    Call every 5 minutes to gradually score messages.
+    Call every 5 minutes to gradually score messages. Accepts GET or POST.
     """
     unscored = db.query(Message).filter(Message.moderation_score == None).limit(limit).all()
     
