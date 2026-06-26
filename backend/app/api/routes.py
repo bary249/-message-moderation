@@ -1130,8 +1130,74 @@ async def cron_score(
     
     db.commit()
     remaining = db.query(Message).filter(Message.moderation_score == None).count()
-    
+
     return {"status": "ok", "scored": scored, "remaining": remaining}
+
+
+# =========================================================================
+# External scoring API — the heavy Claude work runs OFF the web box (e.g. a
+# GitHub Actions runner). These endpoints only do light DB reads/writes, all
+# off the event loop, so they never block logins on the small replica.
+# =========================================================================
+
+def _pending_to_score(limit: int):
+    db = SessionLocal()
+    try:
+        rows = db.query(Message.id, Message.original_message).filter(
+            Message.moderation_score == None
+        ).limit(limit).all()
+        return [{"id": r[0], "text": r[1] or ""} for r in rows]
+    finally:
+        db.close()
+
+
+def _apply_scores(results, chunk_size: int = 100):
+    db = SessionLocal()
+    updated = 0
+    pending = 0
+    try:
+        for it in results:
+            mid = it.get("id")
+            if mid is None:
+                continue
+            msg = db.query(Message).filter(Message.id == mid).first()
+            if not msg:
+                continue
+            msg.moderation_score = it.get("moderation_score")
+            msg.adversity_score = it.get("adversity_score")
+            msg.violence_score = it.get("violence_score")
+            msg.inappropriate_content_score = it.get("inappropriate_content_score")
+            msg.spam_score = it.get("spam_score")
+            if it.get("processed_message"):
+                msg.processed_message = it.get("processed_message")
+            updated += 1
+            pending += 1
+            if pending >= chunk_size:
+                db.commit()
+                pending = 0
+        if pending:
+            db.commit()
+        return updated
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.get("/scoring/pending")
+async def scoring_pending(limit: int = 100):
+    """Return a batch of unscored messages (id + text) for an external scorer.
+    No model calls happen here — scoring is done off-box and pushed to /scoring/results."""
+    limit = max(1, min(limit, 500))
+    return await asyncio.to_thread(_pending_to_score, limit)
+
+
+@router.post("/scoring/results")
+async def scoring_results(results: List[dict]):
+    """Apply externally-computed scores by message id (light, chunked, off-thread)."""
+    updated = await asyncio.to_thread(_apply_scores, results)
+    return {"status": "ok", "updated": updated}
 
 
 @router.post("/moderation/auto-refresh")

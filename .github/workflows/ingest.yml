@@ -3,9 +3,11 @@ name: ingest
 # Replaces the old external keep-alive cron, which only pinged the root "/" URL
 # and never ingested anything (that is why the moderation queue silently froze).
 #
-# This workflow pulls new messages from Snowflake into the moderation DB and
-# scores them. The endpoints are public (unauthenticated), so no secrets are
-# required. NOTE: scheduled workflows only run from the default branch (main).
+# This workflow pulls new messages from Snowflake into the moderation DB
+# (FETCH ONLY). It deliberately does NOT score: bulk-scoring overwhelmed the
+# small single replica, so scoring runs off-box via the separate "score"
+# workflow. cron/fetch is incremental + off-thread, so it never blocks logins.
+# NOTE: scheduled workflows only run from the default branch (main).
 
 on:
   schedule:
@@ -31,10 +33,3 @@ jobs:
         # POST works on the currently-deployed code (the GET alias is not deployed
         # yet). -f => fail the step on an error status once the hardened build ships.
         run: curl -fsS -m 300 -X POST "$API/cron/fetch?days=1" -w '\n[%{http_code}]\n'
-
-      - name: Score pending messages (best-effort)
-        run: |
-          for i in 1 2 3 4 5; do
-            echo "== score batch $i =="
-            curl -fsS -m 180 -X POST "$API/moderation/score-batch?limit=20" -w '\n[%{http_code}]\n' || true
-          done

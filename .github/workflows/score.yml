@@ -1,0 +1,39 @@
+name: score
+
+# Scores unscored messages OFF the web box: Claude calls run here on the GitHub
+# runner, and only finished scores are pushed back via /scoring/results. This is
+# why bulk scoring no longer touches (or overwhelms) the small single replica.
+#
+# Requires repo secret ANTHROPIC_API_KEY (the key ending CMYZ7QAA).
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # GitHub throttles scheduled runs; this is best-effort
+  workflow_dispatch: {}
+
+concurrency:
+  group: score
+  cancel-in-progress: false
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      API: https://message-moderation-production.up.railway.app/api/v1
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install --quiet anthropic requests
+      - name: Guard — require API key
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY secret is not set. Add it in repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+      - name: Score pending messages (off-box)
+        run: python .github/scripts/score_pending.py
