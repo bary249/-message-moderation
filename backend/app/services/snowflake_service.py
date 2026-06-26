@@ -143,13 +143,13 @@ class SnowflakeService:
     async def get_messages_by_date(
         self,
         target_date: str,
-        limit: int = 100000
+        limit: int = 5000
     ) -> List[dict]:
-        """GET: Fetch ALL messages from a specific date.
+        """GET: Fetch messages from a specific date (manual backfill helper).
 
-        The limit is intentionally high so a busy day (>1000 messages) is not
-        silently truncated by `ORDER BY CREATED_AT DESC LIMIT`. The WHERE clause
-        already bounds the result set to a single day.
+        Limit is generous enough that a busy day isn't silently truncated at
+        1000, but bounded so a single pull can't balloon memory on the small
+        replica. The WHERE clause already constrains results to one day.
         """
         # target_date should be in YYYY-MM-DD format
         query = f"""

@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.models.database import Base
@@ -20,6 +20,19 @@ elif database_url.startswith("postgresql"):
     connect_args["sslmode"] = "require"
 
 engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
+
+# SQLite: enable WAL journaling so reads (e.g. moderator login / queue) are never
+# blocked by a long ingestion write. busy_timeout makes brief contention wait
+# instead of raising "database is locked"; synchronous=NORMAL is safe under WAL
+# and much faster for the bulk inserts ingestion does.
+if database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _sqlite_wal_pragmas(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=10000;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.close()
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

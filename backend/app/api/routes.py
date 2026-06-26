@@ -1,5 +1,7 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db, SessionLocal
@@ -1017,59 +1019,85 @@ async def cron_ping():
     return {"status": "ok", "message": "Server is awake"}
 
 
-@router.api_route("/cron/fetch", methods=["GET", "POST"])
-async def cron_fetch(
-    days: int = 1,
-    db: Session = Depends(get_db)
-):
-    """
-    Fetch-only endpoint for cron. Fast, no scoring.
-    Call every 15-30 minutes. Accepts GET or POST so simple uptime pingers work.
-    """
-    from datetime import datetime, timedelta
-    
-    fetched = 0
-    for i in range(days):
-        date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-        try:
-            if snowflake_service.is_available():
-                messages = await snowflake_service.get_messages_by_date(date)
-                for msg in messages:
-                    text = msg.get("text", "")
-                    if not text or text.strip() == "" or text == "📷 image":
-                        continue
-                    
-                    existing = db.query(Message).filter(
-                        Message.group_id == msg.get("interest_group_id"),
-                        Message.sender_id == msg.get("user_id"),
-                        Message.original_message == text
-                    ).first()
-                    
-                    if not existing:
-                        db_message = Message(
-                            original_message=text,
-                            processed_message=text,
-                            building_id=msg.get("community_id"),
-                            building_name=msg.get("building_name"),
-                            client_name=msg.get("client_name"),
-                            group_id=msg.get("interest_group_id"),
-                            group_name=msg.get("group_name"),
-                            sender_id=msg.get("user_id"),
-                            message_timestamp=msg.get("created_at")
-                        )
-                        db.add(db_message)
-                        fetched += 1
-                db.commit()
-        except Exception as e:
-            # Surface failures with a real error status instead of masking them
-            # as HTTP 200 — a cron/monitor must be able to SEE ingestion break.
-            db.rollback()
-            raise HTTPException(
-                status_code=500,
-                detail=f"cron/fetch failed for {date} (fetched {fetched} so far): {e}"
-            )
+def _latest_message_iso():
+    """Newest message_timestamp already stored, as a Snowflake-comparable string.
+    Used as an incremental watermark so cron/fetch only pulls genuinely new rows."""
+    db = SessionLocal()
+    try:
+        latest = db.query(func.max(Message.message_timestamp)).scalar()
+        return latest.strftime("%Y-%m-%d %H:%M:%S") if latest else None
+    finally:
+        db.close()
 
-    return {"status": "ok", "fetched": fetched}
+
+def _save_new_messages(messages, chunk_size: int = 200):
+    """Insert messages not already stored, committing in small chunks so each
+    write transaction is short (brief SQLite WAL locks). Runs on a worker thread
+    via asyncio.to_thread so the single web worker keeps serving logins/queue."""
+    db = SessionLocal()
+    saved = 0
+    pending = 0
+    try:
+        for msg in messages:
+            text = msg.get("text", "")
+            if not text or text.strip() == "" or text == "📷 image":
+                continue
+            exists = db.query(Message.id).filter(
+                Message.group_id == msg.get("interest_group_id"),
+                Message.sender_id == msg.get("user_id"),
+                Message.original_message == text,
+            ).first()
+            if exists:
+                continue
+            db.add(Message(
+                original_message=text,
+                processed_message=text,
+                building_id=msg.get("community_id"),
+                building_name=msg.get("building_name"),
+                client_name=msg.get("client_name"),
+                group_id=msg.get("interest_group_id"),
+                group_name=msg.get("group_name"),
+                sender_id=msg.get("user_id"),
+                message_timestamp=msg.get("created_at"),
+            ))
+            saved += 1
+            pending += 1
+            if pending >= chunk_size:
+                db.commit()
+                pending = 0
+        if pending:
+            db.commit()
+        return saved
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.api_route("/cron/fetch", methods=["GET", "POST"])
+async def cron_fetch(days: int = 1):
+    """
+    Incremental, non-blocking fetch for cron (no scoring). Pulls only messages
+    newer than the latest one already stored, and performs every DB write on a
+    worker thread so the single web worker keeps serving logins/queue while it
+    runs. Accepts GET or POST so simple uptime pingers work.
+    """
+    if not snowflake_service.is_available():
+        raise HTTPException(status_code=503, detail="Snowflake not configured")
+
+    try:
+        since = await asyncio.to_thread(_latest_message_iso)
+        if since:
+            messages = await snowflake_service.get_group_messages(limit=3000, since_timestamp=since)
+        else:
+            messages = await snowflake_service.get_group_messages(limit=3000, days_back=max(days, 1))
+        saved = await asyncio.to_thread(_save_new_messages, messages)
+        return {"status": "ok", "fetched": saved, "scanned": len(messages), "since": since}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"cron/fetch failed: {e}")
 
 
 @router.api_route("/cron/score", methods=["GET", "POST"])
