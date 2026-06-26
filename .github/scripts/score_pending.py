@@ -15,6 +15,10 @@ import requests
 import anthropic
 
 API = os.environ["API"].rstrip("/")
+# Shared secret for the protected /scoring/* endpoints (sent as X-Cron-Secret).
+# Empty when unset so local/dev runs against an unguarded server still work.
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
+HEADERS = {"X-Cron-Secret": CRON_SECRET} if CRON_SECRET else {}
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 MODEL = "claude-haiku-4-5-20251001"
 ROUNDS = int(os.environ.get("ROUNDS", "150"))  # max batches per workflow run
@@ -54,7 +58,7 @@ def score_one(item):
 def main():
     total = 0
     for rnd in range(ROUNDS):
-        r = requests.get(f"{API}/scoring/pending", params={"limit": BATCH}, timeout=60)
+        r = requests.get(f"{API}/scoring/pending", params={"limit": BATCH}, headers=HEADERS, timeout=60)
         r.raise_for_status()
         pending = r.json()
         if not pending:
@@ -62,7 +66,7 @@ def main():
             break
         with ThreadPoolExecutor(max_workers=WORKERS) as ex:
             results = list(ex.map(score_one, pending))
-        resp = requests.post(f"{API}/scoring/results", json=results, timeout=180)
+        resp = requests.post(f"{API}/scoring/results", json=results, headers=HEADERS, timeout=180)
         resp.raise_for_status()
         upd = resp.json().get("updated", 0)
         total += upd
