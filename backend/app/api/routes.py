@@ -1,5 +1,6 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+import secrets
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Header, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ import hashlib
 from app.services.claude_moderator import ClaudeModerator
 from app.services.snowflake_service import snowflake_service
 from app.core.security import verify_token, verify_password, create_access_token, get_password_hash
+from app.core.config import settings
 from datetime import datetime
 
 router = APIRouter()
@@ -30,6 +32,33 @@ async def get_current_moderator(credentials: HTTPAuthorizationCredentials = Depe
             detail="Moderator not found"
         )
     return moderator
+
+
+# Shared-secret guard for the unattended cron / data-mutating endpoints.
+# These run without a moderator login (GitHub Actions crons, off-box scorer),
+# so instead of get_current_moderator they require a shared secret supplied via
+# the `X-Cron-Secret` header or a `?token=` query param.
+async def require_cron_secret(
+    x_cron_secret: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+):
+    """Reject the request with 401 unless it carries the configured CRON_SECRET.
+
+    The secret may be sent either as the `X-Cron-Secret` header or a `?token=`
+    query param. If CRON_SECRET is not set on the server the check is skipped
+    (fail-open) so the existing crons keep working until the secret is rolled
+    out on both Railway and GitHub Actions; the gap is logged so it is visible.
+    """
+    expected = settings.cron_secret
+    if not expected:
+        print("[AUTH] WARNING: CRON_SECRET not set — cron/scoring endpoints are PUBLIC")
+        return
+    provided = x_cron_secret or token
+    if not provided or not secrets.compare_digest(provided.encode(), expected.encode()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing cron secret",
+        )
 
 # Message intake endpoint
 @router.post("/messages", response_model=MessageSubmissionResponse)
@@ -498,7 +527,7 @@ async def run_ingestion_task(community_id: Optional[str], limit: int, days_back:
         print(f"[BACKGROUND] Error during ingestion: {str(e)}")
 
 
-@router.post("/snowflake/ingest")
+@router.post("/snowflake/ingest", dependencies=[Depends(require_cron_secret)])
 async def ingest_from_snowflake(
     community_id: Optional[str] = None,
     limit: int = 50,
@@ -525,7 +554,7 @@ async def ingest_from_snowflake(
     }
 
 
-@router.post("/snowflake/fetch-by-date")
+@router.post("/snowflake/fetch-by-date", dependencies=[Depends(require_cron_secret)])
 async def fetch_messages_by_date(
     target_date: str,
     db: Session = Depends(get_db)
@@ -605,7 +634,7 @@ async def fetch_messages_by_date(
     }
 
 
-@router.post("/snowflake/fetch-by-date-range")
+@router.post("/snowflake/fetch-by-date-range", dependencies=[Depends(require_cron_secret)])
 async def fetch_messages_by_date_range(
     start_date: str,
     end_date: str,
@@ -1075,7 +1104,7 @@ def _save_new_messages(messages, chunk_size: int = 200):
         db.close()
 
 
-@router.api_route("/cron/fetch", methods=["GET", "POST"])
+@router.api_route("/cron/fetch", methods=["GET", "POST"], dependencies=[Depends(require_cron_secret)])
 async def cron_fetch(days: int = 1):
     """
     Incremental, non-blocking fetch for cron (no scoring). Pulls only messages
@@ -1100,7 +1129,7 @@ async def cron_fetch(days: int = 1):
         raise HTTPException(status_code=500, detail=f"cron/fetch failed: {e}")
 
 
-@router.api_route("/cron/score", methods=["GET", "POST"])
+@router.api_route("/cron/score", methods=["GET", "POST"], dependencies=[Depends(require_cron_secret)])
 async def cron_score(
     limit: int = 3,
     db: Session = Depends(get_db)
@@ -1198,7 +1227,7 @@ def _apply_scores(results, chunk_size: int = 100):
         db.close()
 
 
-@router.get("/scoring/pending")
+@router.get("/scoring/pending", dependencies=[Depends(require_cron_secret)])
 async def scoring_pending(limit: int = 100):
     """Return a batch of unscored messages (id + text) for an external scorer.
     No model calls happen here — scoring is done off-box and pushed to /scoring/results."""
@@ -1206,7 +1235,7 @@ async def scoring_pending(limit: int = 100):
     return await asyncio.to_thread(_pending_to_score, limit)
 
 
-@router.post("/scoring/results")
+@router.post("/scoring/results", dependencies=[Depends(require_cron_secret)])
 async def scoring_results(results: List[dict]):
     """Apply externally-computed scores by message id (light, chunked, off-thread)."""
     updated = await asyncio.to_thread(_apply_scores, results)
@@ -1268,7 +1297,7 @@ async def auto_refresh(
     return results
 
 
-@router.post("/moderation/bulk-import")
+@router.post("/moderation/bulk-import", dependencies=[Depends(require_cron_secret)])
 async def bulk_import_messages(
     messages: List[dict],
     db: Session = Depends(get_db)

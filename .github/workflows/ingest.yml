@@ -25,11 +25,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       API: https://message-moderation-production.up.railway.app/api/v1
+      # Shared secret required by the protected endpoints. Add it under repo
+      # Settings > Secrets and variables > Actions, matching CRON_SECRET on Railway.
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
       - name: Wake server (keep-alive)
+        # /cron/ping is intentionally unauthenticated, so no secret is sent here.
         run: curl -fsS -m 90 "$API/cron/ping" -w '\n[%{http_code}]\n' || true
 
       - name: Fetch new messages from Snowflake
         # POST works on the currently-deployed code (the GET alias is not deployed
         # yet). -f => fail the step on an error status once the hardened build ships.
-        run: curl -fsS -m 300 -X POST "$API/cron/fetch?days=1" -w '\n[%{http_code}]\n'
+        # Block scalar (run: |) so the "X-Cron-Secret: ..." colon does not trip YAML.
+        run: |
+          curl -fsS -m 300 -X POST -H "X-Cron-Secret: $CRON_SECRET" "$API/cron/fetch?days=1" -w '\n[%{http_code}]\n'
