@@ -36,7 +36,7 @@ app.include_router(router, prefix="/api/v1")
 async def root():
     return {
         "message": "Message Moderation API",
-        "version": "1.0.9",
+        "version": "1.1.0",
         "status": "online",
         "mode": "async-manual"
     }

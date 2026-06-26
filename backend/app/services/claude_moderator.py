@@ -61,7 +61,7 @@ Return JSON only:
             # Simple call with timeout - no retries to avoid complexity
             response = await asyncio.wait_for(
                 self.client.messages.create(
-                    model="claude-3-5-haiku-20241022",
+                    model="claude-haiku-4-5-20251001",
                     max_tokens=200,
                     messages=[{"role": "user", "content": prompt}]
                 ),

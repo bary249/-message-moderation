@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db, SessionLocal
@@ -1143,8 +1143,21 @@ async def cron_score(
 def _pending_to_score(limit: int):
     db = SessionLocal()
     try:
+        # "Pending" = never scored, OR scored with the exact fallback signature
+        # (0.5 / 0.1 / 0.1 / 0.1 / 0.1) that the scorer writes when a Claude call
+        # fails. Treating those as pending makes scoring self-heal after a model
+        # or key outage — a later good run re-scores them automatically.
         rows = db.query(Message.id, Message.original_message).filter(
-            Message.moderation_score == None
+            or_(
+                Message.moderation_score == None,
+                and_(
+                    Message.moderation_score == 0.5,
+                    Message.adversity_score == 0.1,
+                    Message.violence_score == 0.1,
+                    Message.inappropriate_content_score == 0.1,
+                    Message.spam_score == 0.1,
+                ),
+            )
         ).limit(limit).all()
         return [{"id": r[0], "text": r[1] or ""} for r in rows]
     finally:
