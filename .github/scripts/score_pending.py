@@ -17,7 +17,7 @@ import anthropic
 API = os.environ["API"].rstrip("/")
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 MODEL = "claude-haiku-4-5-20251001"
-ROUNDS = int(os.environ.get("ROUNDS", "70"))   # max batches per workflow run
+ROUNDS = int(os.environ.get("ROUNDS", "150"))  # max batches per workflow run
 BATCH = int(os.environ.get("BATCH", "100"))    # messages per batch
 WORKERS = int(os.environ.get("WORKERS", "4"))  # concurrent Claude calls
 
